@@ -1,0 +1,8 @@
+python -m PyInstaller --onefile --name ColdFish3 \
+  --collect-all chess \
+  --add-data "openings.bin:." \
+  main.py
+  
+python -m PyInstaller --onefile --name ColdFish3 \
+  --collect-all chess \
+  main.py
