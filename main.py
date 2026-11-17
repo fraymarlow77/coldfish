@@ -1,53 +1,40 @@
-"""
-ColdFish v4 — a working Python chess engine (UCI).
-Requires: pip install python-chess
-
-Test:
-    echo -e "uci\nisready\nposition startpos moves e2e4 e7e5\ngo depth 4\nquit" | python coldfish.py
-
-Design invariants (do not break these):
-  1. eval_stm(board) returns score from SIDE-TO-MOVE's POV. Always.
-  2. negamax does exactly ONE negation: score = -negamax(...).
-  3. Mate is -MATE + ply when the side to move is mated.
-  4. Move ordering = captures first (MVV-LVA), then promotions, then quiet.
-  5. Quiescence resolves captures so depth-0 doesn't hang pieces.
-"""
-
+import os
 import sys
+from collections import Counter
+
 import chess
 import chess.polyglot
-import os
 
-def resource_path(relative):
+
+def ruta_recurso(relativa):
+    """Devuelve la ruta absoluta de un recurso, dentro o fuera de PyInstaller."""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, relative)
+    return os.path.join(base, relativa)
 
 
 # ============================================================
-# CONSTANTS
+# CONSTANTES
 # ============================================================
-
-
 
 MATE = 100_000
-INF  = 1_000_000
+INF = 1_000_000
 
-VAL = {
-    chess.PAWN:   100,
+# El rey vale 0 porque nunca se captura; su posición se evalúa con las PST.
+VALOR_PIEZA = {
+    chess.PAWN: 100,
     chess.KNIGHT: 320,
     chess.BISHOP: 330,
-    chess.ROOK:   500,
-    chess.QUEEN:  900,
-    chess.KING:   0,      # king not counted in material
+    chess.ROOK: 500,
+    chess.QUEEN: 900,
+    chess.KING: 0,
 }
 
-# --- Piece-Square Tables (Sunfish-style, white POV) ---
-# Authored from white's perspective: rank1 = first row, a1 = index 0.
-# For black we mirror the square with chess.square_mirror().
+# Tablas de casillas indexadas con a1 = 0 desde el punto de vista de las blancas.
+# Para las negras se espeja la casilla con chess.square_mirror().
 
-PST_PAWN = [
+PST_PEON = [
      0,   0,   0,   0,   0,   0,   0,   0,
-     0,  0,  0,  0,  0,  0,  0,   0,   0,
+     0,   0,   0,   0,   0,   0,   0,   0,
     10,  10,  20,  30,  30,  20,  10,  10,
      5,   5,  10,  80,  80,  10,   5,   5,
      0,   0,   0,  20,  20,   0,   0,   0,
@@ -56,10 +43,10 @@ PST_PAWN = [
      0,   0,   0,   0,   0,   0,   0,   0,
 ]
 
-PST_KNIGHT = [
+PST_CABALLO = [
    -50, -40, -30, -30, -30, -30, -40, -50,
    -40, -20,   0,   0,   0,   0, -20, -40,
-   -30,  -10,  10,  15,  15,  10, -10, -30,
+   -30, -10,  10,  15,  15,  10, -10, -30,
    -30,   5,  15,  20,  20,  15,   5, -30,
    -30,   0,  15,  20,  20,  15,   0, -30,
    -30,   5,  10,  15,  15,  10,   5, -30,
@@ -67,7 +54,7 @@ PST_KNIGHT = [
    -50, -40, -30, -30, -30, -30, -40, -50,
 ]
 
-PST_BISHOP = [
+PST_ALFIL = [
    -20, -10, -10, -10, -10, -10, -10, -20,
    -10,   0,   0,   0,   0,   0,   0, -10,
    -10,   0,   5,  10,  10,   5,   0, -10,
@@ -78,8 +65,8 @@ PST_BISHOP = [
    -20, -10, -10, -10, -10, -10, -10, -20,
 ]
 
-PST_ROOK = [
-    -20,   5,   0,   0,   0,   0,  5,   -20,
+PST_TORRE = [
+     0,   5,   0,   0,   0,   0,   5,   0,
      5,  10,  10,  10,  10,  10,  10,   5,
     -5,   0,   0,   0,   0,   0,   0,  -5,
     -5,   0,   0,   0,   0,   0,   0,  -5,
@@ -89,7 +76,7 @@ PST_ROOK = [
      0,   0,   0,   5,   5,   0,   0,   0,
 ]
 
-PST_QUEEN = [
+PST_DAMA = [
    -20, -10, -10,  -5,  -5, -10, -10, -20,
    -10,   0,   0,   0,   0,   0,   0, -10,
    -10,   0,   5,   5,   5,   5,   0, -10,
@@ -100,7 +87,7 @@ PST_QUEEN = [
    -20, -10, -10,  -5,  -5, -10, -10, -20,
 ]
 
-PST_KING_MID = [
+PST_REY_MEDIO = [
    -30, -40, -40, -50, -50, -40, -40, -30,
    -30, -40, -40, -50, -50, -40, -40, -30,
    -30, -40, -40, -50, -50, -40, -40, -30,
@@ -111,7 +98,7 @@ PST_KING_MID = [
     20,  30,  10,   0,   0,  10,  30,  20,
 ]
 
-PST_KING_END = [
+PST_REY_FINAL = [
    -50, -40, -30, -20, -20, -30, -40, -50,
    -30, -20, -10,   0,   0, -10, -20, -30,
    -30, -10,  20,  30,  30,  20, -10, -30,
@@ -123,352 +110,351 @@ PST_KING_END = [
 ]
 
 PST = {
-    chess.PAWN:   PST_PAWN,
-    chess.KNIGHT: PST_KNIGHT,
-    chess.BISHOP: PST_BISHOP,
-    chess.ROOK:   PST_ROOK,
-    chess.QUEEN:  PST_QUEEN,
+    chess.PAWN: PST_PEON,
+    chess.KNIGHT: PST_CABALLO,
+    chess.BISHOP: PST_ALFIL,
+    chess.ROOK: PST_TORRE,
+    chess.QUEEN: PST_DAMA,
 }
 
-PASSED_PAWN_BONUS = [0, 5, 10, 20, 35, 60, 100, 0]   # by relative rank
-DOUBLED_PAWN_PENALTY   = -10
-ISOLATED_PAWN_PENALTY  = -15
-BISHOP_PAIR_BONUS      = 30
-KING_SHIELD_BONUS      = 10
+# Verifica al importar que ninguna tabla quedó mal armada (8 filas de 8).
+for _tabla in (*PST.values(), PST_REY_MEDIO, PST_REY_FINAL):
+    if len(_tabla) != 64:
+        raise ValueError(f"Tabla PST con {len(_tabla)} entradas, se esperaban 64")
+
+# Indexado por fila relativa al bando del peón.
+BONO_PEON_PASADO = [0, 5, 10, 20, 35, 60, 100, 0]
+PENALIZACION_PEON_DOBLADO = -10
+PENALIZACION_PEON_AISLADO = -15
+BONO_PAR_ALFILES = 30
+BONO_ESCUDO_REY = 10
+
 
 # ============================================================
-# HELPERS
+# AYUDANTES
 # ============================================================
 
-
-def pst_value(piece_type, color, square):
-    """Return PST bonus from the piece owner's perspective."""
-    if piece_type == chess.KING:
-        # simple taper: endgame table if few material left
-        pass  # handled below with phase
-    table = PST[piece_type]
-    if color == chess.WHITE:
-        return table[square]
+def valor_pst(tipo_pieza, color, casilla, final):
+    """Devuelve el valor posicional de la pieza desde la perspectiva de su dueño."""
+    if tipo_pieza == chess.KING:
+        tabla = PST_REY_FINAL if final else PST_REY_MEDIO
     else:
-        return table[chess.square_mirror(square)]
-
-
-def pst_value_king(color, square, endgame):
-    table = PST_KING_END if endgame else PST_KING_MID
+        tabla = PST[tipo_pieza]
     if color == chess.WHITE:
-        return table[square]
-    else:
-        return table[chess.square_mirror(square)]
+        return tabla[casilla]
+    return tabla[chess.square_mirror(casilla)]
 
 
-def is_endgame(board):
-    """Rough: endgame when total non-pawn material is low."""
+def es_final(tablero):
+    """Indica si queda poco material no peón; el umbral de 2000 equivale a dos torres y una menor."""
     total = 0
-    for sq in chess.SQUARES:
-        p = board.piece_at(sq)
-        if p and p.piece_type not in (chess.PAWN, chess.KING):
-            total += VAL[p.piece_type]
-    return total < 2000  # ~ two rooks + minor; tune as needed
+    for pieza in tablero.piece_map().values():
+        if pieza.piece_type not in (chess.PAWN, chess.KING):
+            total += VALOR_PIEZA[pieza.piece_type]
+    return total < 2000
 
 
 # ============================================================
-# EVALUATION (always WHITE-relative)
+# EVALUACIÓN
 # ============================================================
 
-def evaluate_white(board):
-    if board.is_checkmate():
-        return -MATE if board.turn == chess.WHITE else MATE
-    if board.is_stalemate() or board.is_insufficient_material():
+def evaluar_blancas(tablero):
+    """Evalúa la posición siempre desde la perspectiva de las blancas."""
+    # Si hay jaque mate, perdió el bando que tiene el turno.
+    if tablero.is_checkmate():
+        return -MATE if tablero.turn == chess.WHITE else MATE
+    if tablero.is_stalemate() or tablero.is_insufficient_material():
         return 0
 
-    endgame = is_endgame(board)
-    score = 0
+    final = es_final(tablero)
+    puntaje = 0
 
-    # --- Material + PST ---
-    for sq in chess.SQUARES:
-        p = board.piece_at(sq)
-        if not p:
-            continue
-        sign = 1 if p.color == chess.WHITE else -1
-        score += sign * VAL[p.piece_type]
-        if p.piece_type == chess.KING:
-            score += sign * pst_value_king(p.color, sq, endgame)
-        else:
-            score += sign * pst_value(p.piece_type, p.color, sq)
+    for casilla, pieza in tablero.piece_map().items():
+        signo = 1 if pieza.color == chess.WHITE else -1
+        puntaje += signo * VALOR_PIEZA[pieza.piece_type]
+        puntaje += signo * valor_pst(pieza.piece_type, pieza.color, casilla, final)
 
-    # --- Pawn structure ---
-    score += eval_pawns(board)
+    puntaje += evaluar_peones(tablero)
 
-    # --- Bishop pair ---
-    for color, sign in ((chess.WHITE, 1), (chess.BLACK, -1)):
-        if len(board.pieces(chess.BISHOP, color)) >= 2:
-            score += sign * BISHOP_PAIR_BONUS
+    for color, signo in ((chess.WHITE, 1), (chess.BLACK, -1)):
+        if len(tablero.pieces(chess.BISHOP, color)) >= 2:
+            puntaje += signo * BONO_PAR_ALFILES
 
-    # --- King shield (only meaningful in middlegame) ---
-    if not endgame:
-        score += king_shield(board, chess.WHITE)
-        score -= king_shield(board, chess.BLACK)
+    # En el final el escudo de peones pierde importancia.
+    if not final:
+        puntaje += escudo_del_rey(tablero, chess.WHITE)
+        puntaje -= escudo_del_rey(tablero, chess.BLACK)
 
-    return score
+    return puntaje
 
 
-def eval_pawns(board):
-    """White-relative: passed, doubled, isolated."""
-    from collections import Counter
-    score = 0
-    for color, sign in ((chess.WHITE, 1), (chess.BLACK, -1)):
-        own = board.pieces(chess.PAWN, color)
-        enemy = board.pieces(chess.PAWN, not color)
+def evaluar_peones(tablero):
+    """Suma peones pasados y resta doblados y aislados, desde las blancas."""
+    puntaje = 0
+    for color, signo in ((chess.WHITE, 1), (chess.BLACK, -1)):
+        propios = tablero.pieces(chess.PAWN, color)
+        rivales = tablero.pieces(chess.PAWN, not color)
+        conteo = Counter(chess.square_file(casilla) for casilla in propios)
 
-        files = [chess.square_file(sq) for sq in own]
-        counts = Counter(files)
+        for casilla in propios:
+            col = chess.square_file(casilla)
+            fila = chess.square_rank(casilla)
 
-        for sq in own:
-            f = chess.square_file(sq)
-            r = chess.square_rank(sq)
+            if conteo[col] > 1:
+                puntaje += signo * PENALIZACION_PEON_DOBLADO
 
-            if counts[f] > 1:
-                score += sign * DOUBLED_PAWN_PENALTY
+            if not any(c in conteo for c in (col - 1, col + 1)):
+                puntaje += signo * PENALIZACION_PEON_AISLADO
 
-            if not any(ff in counts for ff in (f - 1, f + 1)):
-                score += sign * ISOLATED_PAWN_PENALTY
+            fila_relativa = fila if color == chess.WHITE else 7 - fila
+            filas_adelante = range(fila + 1, 8) if color == chess.WHITE else range(0, fila)
 
-            rel_r = r if color == chess.WHITE else 7 - r
-            passed = True
-            rng = range(r + 1, 8) if color == chess.WHITE else range(0, r)
-            for ef in (f - 1, f, f + 1):
-                if not (0 <= ef <= 7):
+            # Un peón es pasado si ningún rival lo bloquea en su columna ni en las vecinas.
+            pasado = True
+            for col_vecina in (col - 1, col, col + 1):
+                if not 0 <= col_vecina <= 7:
                     continue
-                for er in rng:
-                    if chess.square(ef, er) in enemy:
-                        passed = False
+                for fila_vecina in filas_adelante:
+                    if chess.square(col_vecina, fila_vecina) in rivales:
+                        pasado = False
                         break
-                if not passed:
+                if not pasado:
                     break
-            if passed:
-                score += sign * PASSED_PAWN_BONUS[rel_r]
+            if pasado:
+                puntaje += signo * BONO_PEON_PASADO[fila_relativa]
 
-    return score
+    return puntaje
 
 
-def king_shield(board, color):
-    king_sq = board.king(color)
-    if king_sq is None:
+def escudo_del_rey(tablero, color):
+    """Bonifica los peones propios situados justo delante del rey."""
+    casilla_rey = tablero.king(color)
+    if casilla_rey is None:
         return 0
-    kf = chess.square_file(king_sq)
-    kr = chess.square_rank(king_sq)
-    shield_rank = kr + 1 if color == chess.WHITE else kr - 1
-    if not (0 <= shield_rank <= 7):
+    col_rey = chess.square_file(casilla_rey)
+    fila_rey = chess.square_rank(casilla_rey)
+    fila_escudo = fila_rey + 1 if color == chess.WHITE else fila_rey - 1
+    if not 0 <= fila_escudo <= 7:
         return 0
-    bonus = 0
-    for df in (-1, 0, 1):
-        f = kf + df
-        if 0 <= f <= 7:
-            pawn = chess.Piece(chess.PAWN, color)
-            if board.piece_at(chess.square(f, shield_rank)) == pawn:
-                bonus += KING_SHIELD_BONUS
-    return bonus
+
+    peon = chess.Piece(chess.PAWN, color)
+    bonificacion = 0
+    for desplazamiento in (-1, 0, 1):
+        col = col_rey + desplazamiento
+        if 0 <= col <= 7 and tablero.piece_at(chess.square(col, fila_escudo)) == peon:
+            bonificacion += BONO_ESCUDO_REY
+    return bonificacion
 
 
-def eval_stm(board):
-    """Score from side-to-move's POV — the ONLY form negamax sees."""
-    raw = evaluate_white(board)
-    return raw if board.turn == chess.WHITE else -raw
+def evaluar_lado_a_mover(tablero):
+    """Devuelve el puntaje desde el lado a mover, la única forma que ve negamax."""
+    bruto = evaluar_blancas(tablero)
+    return bruto if tablero.turn == chess.WHITE else -bruto
 
 
 # ============================================================
-# MOVE ORDERING (MVV-LVA + promotions)
+# ORDEN DE MOVIMIENTOS
 # ============================================================
 
-def order_moves(board, moves=None):
-    if moves is None:
-        moves = board.legal_moves
+def ordenar_movimientos(tablero, movimientos=None):
+    """Ordena capturas y promociones primero, con MVV-LVA (víctima valiosa, atacante barato)."""
+    if movimientos is None:
+        movimientos = tablero.legal_moves
 
-    def key(move):
-        s = 0
-        if board.is_capture(move):
-            victim = board.piece_at(move.to_square)
-            attacker = board.piece_at(move.from_square)
-            if victim and attacker:
-                s += 1000 + 10 * VAL[victim.piece_type] - VAL[attacker.piece_type]
+    def clave(movimiento):
+        puntaje = 0
+        if tablero.is_capture(movimiento):
+            victima = tablero.piece_at(movimiento.to_square)
+            atacante = tablero.piece_at(movimiento.from_square)
+            if victima and atacante:
+                puntaje += 1000 + 10 * VALOR_PIEZA[victima.piece_type] - VALOR_PIEZA[atacante.piece_type]
             else:
-                s += 1000 + 10 * VAL[chess.PAWN]
-        if move.promotion:
-            s += 900 + VAL.get(move.promotion, 0)
-        return -s
+                # Captura al paso: no hay pieza en la casilla destino.
+                puntaje += 1000 + 10 * VALOR_PIEZA[chess.PAWN]
+        if movimiento.promotion:
+            puntaje += 900 + VALOR_PIEZA.get(movimiento.promotion, 0)
+        return -puntaje
 
-    return sorted(moves, key=key)
+    return sorted(movimientos, key=clave)
 
 
 # ============================================================
-# SEARCH
+# BÚSQUEDA
 # ============================================================
 
-def quiescence(board, alpha, beta, ply):
-    """Captures-only search at depth 0 to avoid horizon effect."""
-    stand = eval_stm(board)
-    if stand >= beta:
+def busqueda_quiescente(tablero, alfa, beta):
+    """Busca solo capturas al llegar a profundidad 0 para evitar el efecto horizonte."""
+    estatico = evaluar_lado_a_mover(tablero)
+    if estatico >= beta:
         return beta
-    if stand > alpha:
-        alpha = stand
+    if estatico > alfa:
+        alfa = estatico
 
-    captures = [m for m in board.legal_moves if board.is_capture(m)]
-    for move in order_moves(board, captures):
-        board.push(move)
-        score = -quiescence(board, -beta, -alpha, ply + 1)
-        board.pop()
-        if score >= beta:
+    capturas = [m for m in tablero.legal_moves if tablero.is_capture(m)]
+    for movimiento in ordenar_movimientos(tablero, capturas):
+        tablero.push(movimiento)
+        puntaje = -busqueda_quiescente(tablero, -beta, -alfa)
+        tablero.pop()
+        if puntaje >= beta:
             return beta
-        if score > alpha:
-            alpha = score
-    return alpha
+        if puntaje > alfa:
+            alfa = puntaje
+    return alfa
 
 
-def negamax(board, depth, alpha, beta, ply):
-    """Returns (score, best_move), score from STM POV."""
-    if board.is_checkmate():
-        return -MATE + ply, None
-    if board.is_stalemate() or board.is_insufficient_material():
+def negamax(tablero, profundidad, alfa, beta, distancia_raiz):
+    """Devuelve (puntaje, mejor_movimiento) desde el lado a mover."""
+    # Sumar la distancia a la raíz hace preferir los mates más cercanos.
+    if tablero.is_checkmate():
+        return -MATE + distancia_raiz, None
+    if tablero.is_stalemate() or tablero.is_insufficient_material():
         return 0, None
 
-    if depth == 0:
-        return quiescence(board, alpha, beta, ply), None
+    if profundidad == 0:
+        return busqueda_quiescente(tablero, alfa, beta), None
 
-    best_score = -INF
-    best_move  = None
+    mejor_puntaje = -INF
+    mejor_movimiento = None
 
-    for move in order_moves(board):
-        board.push(move)
-        score, _ = negamax(board, depth - 1, -beta, -alpha, ply + 1)
-        score = -score                                   # ← ONE negation
-        board.pop()
+    for movimiento in ordenar_movimientos(tablero):
+        tablero.push(movimiento)
+        puntaje, _ = negamax(tablero, profundidad - 1, -beta, -alfa, distancia_raiz + 1)
+        # El puntaje del hijo viene desde el rival, por eso se niega una sola vez.
+        puntaje = -puntaje
+        tablero.pop()
 
-        if score > best_score:
-            best_score = score
-            best_move  = move
-        if score > alpha:
-            alpha = score
-        if alpha >= beta:
+        if puntaje > mejor_puntaje:
+            mejor_puntaje = puntaje
+            mejor_movimiento = movimiento
+        if puntaje > alfa:
+            alfa = puntaje
+        if alfa >= beta:
             break
 
-    return best_score, best_move
+    return mejor_puntaje, mejor_movimiento
 
 
-
-
-def get_book_move_from_bin(board, book_path="opening.bin"):
-    """Busca un movimiento en un archivo .bin de Polyglot."""
+def leer_movimiento_de_libro(tablero, ruta_libro):
+    """Devuelve un movimiento del libro Polyglot, o None si no hay."""
     try:
-        with chess.polyglot.open_reader(book_path) as reader:
-            # weighted_choice selecciona un movimiento basado en su peso (frecuencia en partidas)
-            # o puedes usar reader.find(board) si prefieres siempre el principal.
-            
-            entry = reader.weighted_choice(board)
-            if entry:
-                print(f"info string book move: {entry.move}", file=sys.stderr)  # ← agregar
-                return entry.move
+        with chess.polyglot.open_reader(ruta_libro) as lector:
+
+            entrada = lector.weighted_choice(tablero)
+            if entrada:
+                return entrada.move
     except FileNotFoundError:
-        # Si el archivo no existe o no se encuentra en la ruta, el motor sigue calculando normal
+        # Sin libro disponible, el motor calcula normalmente.
         pass
     except IndexError:
-        # Se lanza IndexError si la posición actual no está en el libro de aperturas
+        # La posición no figura en el libro.
         pass
-    
     return None
 
-def search_root(board, depth):
-    """Top-level search. Returns (score, best_move), STM POV."""
-    if not any(board.legal_moves):
-        return (0, None) if not board.is_check() else (-MATE, None)
 
-    # --- HOOK DE APERTURAS CON ARCHIVO .BIN ---
-    # Reemplaza "openings.bin" por la ruta real de tu archivo .bin
-    book_move = get_book_move_from_bin(board, resource_path("openings.bin"))
-    if book_move and book_move in board.legal_moves:
-        return 0, book_move
-    # ------------------------------------------
+def buscar_raiz(tablero, profundidad):
+    """Búsqueda de nivel superior. Devuelve (puntaje, mejor_movimiento) desde el lado a mover."""
+    if not any(tablero.legal_moves):
+        return (0, None) if not tablero.is_check() else (-MATE, None)
 
-    best_score = -INF
-    best_move  = None
-    alpha, beta = -INF, INF
+    # El libro no aporta evaluación, por eso el puntaje devuelto es 0.
+    movimiento_libro = leer_movimiento_de_libro(tablero, ruta_recurso("openings.bin"))
+    if movimiento_libro and movimiento_libro in tablero.legal_moves:
+        return 0, movimiento_libro
 
-    for move in order_moves(board):
-        board.push(move)
-        score, _ = negamax(board, depth - 1, -beta, -alpha, ply=1)
-        score = -score
-        board.pop()
+    mejor_puntaje = -INF
+    mejor_movimiento = None
+    alfa, beta = -INF, INF
 
-        if score > best_score:
-            best_score = score
-            best_move  = move
-        if score > alpha:
-            alpha = score
+    for movimiento in ordenar_movimientos(tablero):
+        tablero.push(movimiento)
+        puntaje, _ = negamax(tablero, profundidad - 1, -beta, -alfa, 1)
+        puntaje = -puntaje
+        tablero.pop()
 
-    if best_move is None:
-        legal = list(board.legal_moves)
-        if legal:
-            best_move = legal[0]
+        if puntaje > mejor_puntaje:
+            mejor_puntaje = puntaje
+            mejor_movimiento = movimiento
+        if puntaje > alfa:
+            alfa = puntaje
 
-    return best_score, best_move
+    # Si todos los puntajes quedaron en el piso, se devuelve igualmente un movimiento legal.
+    if mejor_movimiento is None:
+        legales = list(tablero.legal_moves)
+        if legales:
+            mejor_movimiento = legales[0]
+
+    return mejor_puntaje, mejor_movimiento
+
 
 # ============================================================
-# UCI LOOP
+# BUCLE UCI
 # ============================================================
 
-def uci_loop():
-    board = chess.Board()
+def procesar_position(tablero, partes):
+    """Aplica un comando position; si el FEN es inválido, deja el tablero intacto."""
+    indice_moves = partes.index("moves") if "moves" in partes else len(partes)
 
-    for raw in sys.stdin:
-        line = raw.strip()
-        if not line:
+    if "fen" in partes:
+        campos = partes[partes.index("fen") + 1: indice_moves]
+        if len(campos) < 6:
+            return
+        try:
+            tablero.set_fen(" ".join(campos[:6]))
+        except ValueError:
+            return
+    else:
+        tablero.reset()
+
+    for movimiento_uci in partes[indice_moves + 1:]:
+        try:
+            tablero.push(chess.Move.from_uci(movimiento_uci))
+        except ValueError:
+            # Un movimiento ilegal corta la lista; se conserva lo aplicado hasta ahí.
+            break
+
+
+def bucle_uci():
+    """Lee comandos UCI por entrada estándar y responde por salida estándar."""
+    tablero = chess.Board()
+
+    for linea_cruda in sys.stdin:
+        linea = linea_cruda.strip()
+        if not linea:
             continue
 
-        if line == "uci":
+        if linea == "uci":
             print("id name ColdFish v4")
             print("id author Juan")
             print("uciok")
 
-        elif line == "isready":
+        elif linea == "isready":
             print("readyok")
 
-        elif line == "ucinewgame":
-            board.reset()
+        elif linea == "ucinewgame":
+            tablero.reset()
 
-        elif line.startswith("position"):
-            tokens = line.split()
-            if "fen" in tokens:
-                fi = tokens.index("fen")
-                board.set_fen(" ".join(tokens[fi + 1: fi + 7]))
-            else:
-                board.reset()
-            if "moves" in tokens:
-                mi = tokens.index("moves") + 1
-                for mv_str in tokens[mi:]:
-                    try:
-                        board.push(chess.Move.from_uci(mv_str))
-                    except ValueError:
-                        break
+        elif linea.startswith("position"):
+            procesar_position(tablero, linea.split())
 
-        elif line.startswith("go"):
-            tokens = line.split()
-            depth = 3
-            if "depth" in tokens:
+        elif linea.startswith("go"):
+            partes = linea.split()
+            profundidad = 3
+            if "depth" in partes:
                 try:
-                    depth = int(tokens[tokens.index("depth") + 1])
+                    profundidad = int(partes[partes.index("depth") + 1])
                 except (IndexError, ValueError):
                     pass
-            depth = max(1, min(depth, 6))
+            # Se limita a 1-6 para mantener tiempos de respuesta razonables.
+            profundidad = max(1, min(profundidad, 6))
 
-            _, best = search_root(board, depth)
-            print(f"bestmove {best.uci()}" if best else "bestmove 0000")
+            _, mejor = buscar_raiz(tablero, profundidad)
+            print(f"bestmove {mejor.uci()}" if mejor else "bestmove 0000")
 
-        elif line == "quit":
+        elif linea == "quit":
             break
 
         sys.stdout.flush()
 
 
 if __name__ == "__main__":
-    uci_loop()
-
-
+    bucle_uci()
