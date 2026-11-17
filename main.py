@@ -29,8 +29,6 @@ VALOR_PIEZA = {
     chess.KING: 0,
 }
 
-# Tablas de casillas indexadas con a1 = 0 desde el punto de vista de las blancas.
-# Para las negras se espeja la casilla con chess.square_mirror().
 
 PST_PEON = [
      0,   0,   0,   0,   0,   0,   0,   0,
@@ -227,7 +225,7 @@ def evaluar_peones(tablero):
 
 
 def escudo_del_rey(tablero, color):
-    """Bonifica los peones propios situados justo delante del rey."""
+    """Bonifica los peones propios que estan justo delante del rey."""
     casilla_rey = tablero.king(color)
     if casilla_rey is None:
         return 0
