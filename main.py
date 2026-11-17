@@ -22,8 +22,8 @@ INF = 1_000_000
 # El rey vale 0 porque nunca se captura; su posición se evalúa con las PST.
 VALOR_PIEZA = {
     chess.PAWN: 100,
-    chess.KNIGHT: 320,
-    chess.BISHOP: 330,
+    chess.KNIGHT: 300,
+    chess.BISHOP: 300,
     chess.ROOK: 500,
     chess.QUEEN: 900,
     chess.KING: 0,
