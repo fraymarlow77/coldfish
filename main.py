@@ -424,7 +424,7 @@ def bucle_uci():
 
         if linea == "uci":
             print("id name ColdFish v4")
-            print("id author Juan")
+            print("id author Koda")
             print("uciok")
 
         elif linea == "isready":
